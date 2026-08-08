@@ -202,8 +202,7 @@ Binary sensors go to `unknown` rather than `off` when the answer isn't known, so
 
 ### Pointing your existing automations at it
 
-Your current package uses a curl-based sign-in check. You can trigger off the
-watchdog's state instead.
+Trigger off the watchdog's state rather than polling TeslaMate yourself.
 
 > **If you put these in a package and are enabling packages for the first
 > time**, adding `homeassistant: packages: !include_dir_named packages` to
@@ -213,9 +212,10 @@ watchdog's state instead.
 > fires. If the automations aren't listed under Settings → Automations, that
 > is why.
 
-Retire the curl check once these are live. Running both gives duplicate alerts
-for the same logout, and the curl check has no confirmation logic, so it fires
-on single transient blips that the watchdog deliberately ignores.
+If you already run a curl-based sign-in check, retire it once these are live.
+Running both gives duplicate alerts for the same logout, and a bare curl check
+has no confirmation logic, so it fires on single transient blips that the
+watchdog deliberately ignores.
 
 ```yaml
 automation:
