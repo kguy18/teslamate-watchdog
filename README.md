@@ -1,90 +1,146 @@
 # TeslaMate Watchdog
 
-Monitors a self-hosted TeslaMate instance, publishes what it finds to MQTT, and
-(from stage 2) restarts TeslaMate for the narrow class of failures a restart can
-actually fix.
+A small monitoring and auto-recovery service for a self-hosted
+[TeslaMate](https://github.com/teslamate-org/teslamate) instance. It watches for
+the failure modes that make TeslaMate silently stop recording drives, publishes
+what it finds to MQTT, and restarts TeslaMate only for the narrow class of
+failures a restart can actually fix.
 
-It sends no notifications of its own. Home Assistant consumes the MQTT topics
-and owns all notification logic.
+It sends no notifications itself. Home Assistant (or anything else on your
+broker) consumes the topics and owns notification logic.
 
-## Status
+## Why
 
-| Stage | Scope | State |
-| --- | --- | --- |
-| 1 | Config, HTTP sign-in detection, MQTT publish/subscribe, state machine, HA discovery | **Complete** |
-| 2 | Socket proxy, container + database checks, log classification, restarts, diagnostics | **Complete** |
-| 3 | Extended tests, troubleshooting guide | Complete (220 tests); troubleshooting below |
+TeslaMate can stop recording without appearing to be broken. The web UI answers
+normally while the Tesla API tokens have expired, or the vehicle logger has
+wedged, and you find out weeks later from a gap in your drive history.
 
-## Pre-flight status
+This watches for that specific class of silent failure:
 
-| # | Check | Status |
-| --- | --- | --- |
-| 1 | Compose service names | **Assumed** — defaults `teslamate` / `database`, resolved by name then by `com.docker.compose.service` label. Verify below. |
-| 2 | Sign-in response shape | **Not yet run** — both detection paths implemented, so this is confirmation, not a blocker. Verify below. |
-| 3 | MQTT `healthy` republish behaviour | **Answered from source** — it is an unretained per-summary heartbeat. See [Staleness detection](#staleness-detection). |
-| 4 | Car ID | **Assumed `1`** — subscription uses a `+` wildcard, so a wrong id degrades to "watches every car". |
-| 5 | TeslaMate version | **Answered — you are on 4.0.1, which already contains the fix.** |
+- **Signed out** — the sign-in page is showing and drives are not being recorded
+- **Vehicle logger unhealthy or gone quiet** — even though the web UI answers
+- **TeslaMate unreachable** — container stopped, process hung, or a 5xx loop
+- **PostgreSQL unhealthy** — down, or failing its healthcheck
+- **Auth-refresh failures in the logs** — distinguished from network blips and
+  database errors
 
-On (5): the handoff pointed at PR #5390, which was **closed unmerged** on
-13 June in favour of #5391. The TLS 1.3 / HTTP-2 change for `TESLA_AUTH_HOST`
-shipped in **v4.0.1** as PR #5406, alongside the refresh-token fix. No update
-needed.
+Two design decisions drive everything else:
 
-### Still worth confirming
+**A single bad check never changes anything.** Failures need three consecutive
+agreeing checks, recovery needs two. Transient blips are ignored by design.
 
-**Compose service names.** If yours differ, set `TESLAMATE_CONTAINER` and
-`DATABASE_CONTAINER`. A wrong name is safe but inert — the watchdog logs
-`no container matching …` and refuses to restart rather than guessing.
+**A logged-out TeslaMate is never restarted.** Its refresh token is dead;
+restarting brings it back up still logged out, burns the restart budget and
+delays telling you. Logout goes straight to MQTT so a human re-enters tokens.
+See [Restart policy](#restart-policy).
+
+## Requirements
+
+- TeslaMate running under Docker Compose
+- An MQTT broker that TeslaMate already publishes to
+- Docker Compose v2, and the ability to add two services to your stack
+- Home Assistant is optional — the MQTT topics are useful on their own
+
+## Installation
+
+The watchdog runs as two containers alongside TeslaMate: itself, and a Docker
+socket proxy it uses for container checks and restarts. It never mounts the
+Docker socket directly — see [Security](#security).
+
+### 1. Get the code
+
+Clone it next to your TeslaMate compose file:
 
 ```bash
-docker compose config --services && docker compose ps
+git clone https://github.com/kguy18/teslamate-watchdog.git
 ```
 
-**Sign-in body markers.** Run this while **logged in** — it must print `0`.
-Anything else means the markers would false-positive on a healthy instance, and
-`TESLAMATE_SIGNIN_BODY_MARKERS` needs narrowing.
+### 2. Add the services to your stack
 
-```bash
-curl -s http://<host>:4000/ | grep -icE 'refresh token|access token'
-```
+Copy the two services from [`docker-compose.example.yml`](docker-compose.example.yml)
+into the compose file that already runs TeslaMate. Putting them in the *same*
+file matters: they join TeslaMate's default network automatically, so
+`http://teslamate:4000/` resolves with no extra wiring.
 
-**Restart capability.** The one thing worth proving before you need it. Watch
-for `restart_executed` with `"success": true`:
+To keep them in a separate compose file instead, declare TeslaMate's network as
+`external: true` and attach both services to it.
 
-```bash
-mosquitto_sub -h <broker> -v -t 'teslamate/watchdog/event'
-```
+If you would rather not touch your existing compose file, a
+`docker-compose.override.yml` containing the same two services works
+identically and is merged automatically — reverting is then just deleting one
+file.
 
-If it reports 403, the socket proxy is missing `POST=1` — see [Security](#security).
+### 3. Configure
 
-## Quick start
+Every setting is an environment variable. Only `MQTT_HOST` is required:
 
 ```bash
 cp .env.example .env
 ```
 
-Put your broker details in `.env`, then merge the services from
-`docker-compose.example.yml` into the compose file that already runs TeslaMate,
-and:
+Point it at the **same broker TeslaMate publishes to**, so the watchdog's topics
+land where your automations already look. Check `MQTT_HOST` in TeslaMate's own
+service definition if you are unsure — it is not necessarily a broker inside
+your stack.
+
+Then confirm two things about your setup:
+
+**Service names.** The defaults are `teslamate` and `database`:
 
 ```bash
-docker compose up -d --build watchdog
+docker compose config --services
 ```
 
-Adding the services to TeslaMate's own compose file means they join its default
-network automatically, so `http://teslamate:4000/` resolves with no extra
-wiring. To keep them in a separate compose file instead, declare TeslaMate's
-network as `external: true` and attach both services to it.
+If yours differ, set `TESLAMATE_CONTAINER` and `DATABASE_CONTAINER` to the
+*service* names. Container names generated by Compose (`myproject-teslamate-1`)
+are resolved automatically via the `com.docker.compose.service` label. A wrong
+name is safe but inert — the watchdog logs `no container matching …` and refuses
+to restart rather than guessing.
 
-Watch it work:
+**Sign-in body markers.** Run this while **logged in**. It must print `0`:
+
+```bash
+curl -s http://<teslamate-host>:4000/ | grep -icE 'refresh token|access token'
+```
+
+Anything else means the markers would false-positive on a healthy instance, and
+`TESLAMATE_SIGNIN_BODY_MARKERS` needs narrowing.
+
+### 4. Start it
+
+```bash
+docker compose up -d --build watchdog watchdog-socket-proxy
+```
+
+Naming the services explicitly avoids Compose evaluating — and possibly
+recreating — your running TeslaMate stack.
+
+### 5. Verify
+
+Expect `STARTING` for two check intervals, then `HEALTHY`:
 
 ```bash
 docker compose logs -f watchdog
 ```
 
 ```bash
-mosquitto_sub -h <broker> -v -t 'teslamate/watchdog/#'
+mosquitto_sub -h <broker> -u <user> -P <password> -v -t 'teslamate/watchdog/#'
 ```
+
+You should see twelve retained topics and `availability` reading `online`.
+`logger_healthy` may read `unknown` until the next vehicle summary arrives —
+that is expected, because TeslaMate publishes `healthy` unretained.
+
+**Prove the restart path before you need it.** It is the one thing that fails
+silently:
+
+```bash
+docker exec teslamate-watchdog python -c "import requests; print(requests.post('http://watchdog-socket-proxy:2375/containers/nonexistent/restart', timeout=10).status_code)"
+```
+
+`404` means the grant works and Docker simply has no such container. `403` means
+the proxy is refusing and no recovery will ever succeed — see
+[Security](#security).
 
 ## How it decides
 
@@ -109,9 +165,9 @@ Two guarantees are enforced by tests: an HTTP 200 never overrides a
 confirmed-unhealthy vehicle logger, and a "Refreshed api tokens" log line never
 overrides a sign-in page being served right now.
 
-**5xx is a documented extension.** The original spec's decision table has no
-state for an application error, and mapping it to `HEALTHY` would silently
-defeat the watchdog. It is folded into `TESLAMATE_UNREACHABLE` — "up but
+**5xx has no state of its own.** Treating an application error as `HEALTHY`
+would silently defeat the watchdog, so it is folded into
+`TESLAMATE_UNREACHABLE` — "up but
 erroring" is the hung case a restart is meant for. If the 5xx is caused by the
 database, the database check outranks it *and* the restart guard independently
 requires a healthy database.
@@ -175,8 +231,8 @@ No topic is ever published with an empty payload: an empty retained payload
 reporting "nothing yet".
 
 JSON events on `teslamate/watchdog/event` (not retained): `failure_detected`,
-`authentication_required`, `database_unhealthy`, and from stage 2
-`diagnostics_captured`, `recovery_started`, `restart_executed`, `recovered`,
+`authentication_required`, `database_unhealthy`, `diagnostics_captured`,
+`recovery_started`, `restart_executed`, `recovered`,
 `manual_intervention_required`.
 
 `recovered` is only emitted after a watchdog-initiated restart. A spontaneous
@@ -200,7 +256,7 @@ watchdog dies:
 Binary sensors go to `unknown` rather than `off` when the answer isn't known, so
 "we can't tell" never reads as "fine".
 
-### Pointing your existing automations at it
+### Automations
 
 Trigger off the watchdog's state rather than polling TeslaMate yourself.
 
@@ -448,7 +504,8 @@ Two more things worth knowing:
 `wollomatic/socket-proxy`) can be restricted to exactly
 `POST /containers/<id>/restart`, eliminating the stop/kill/delete surface. That
 is a stricter posture than anything tecnativa's flags can express; it is not the
-default here only because tecnativa is the widely-deployed, spec-named choice.
+default here only because tecnativa is by far the more widely deployed of the
+two, and therefore the one most people already run.
 
 The container runs as uid 10001. A named volume inherits that ownership; a bind
 mount must be chowned to 10001 on the host.
@@ -506,6 +563,24 @@ against the real thing.
 | `logger_healthy` reads `unknown` after a restart | Expected — `healthy` is unretained, so it arrives on the next vehicle summary |
 | `logger_healthy` stuck at `unknown` + a topic warning in the log | No car messages at all: wrong `TESLAMATE_HEALTH_TOPIC` (check TeslaMate's `MQTT_NAMESPACE`) or the MQTT user cannot subscribe |
 | `LOGGER_UNHEALTHY` shortly after the car settles | `MQTT_PARKED_STALE_SECONDS` is below TeslaMate's `suspend_min` — raise it |
+
+## Contributing
+
+Issues and pull requests are welcome. Two things worth knowing before changing
+behaviour:
+
+- **The restart allowlist in `src/state_machine.py` is deliberate.** It is an
+  allowlist rather than a denylist so that a state added later is
+  non-restartable until someone opts it in on purpose. Adding `LOGGED_OUT` to it
+  would make the tool actively harmful — see [Restart policy](#restart-policy).
+- **Test the Docker and MQTT layers against real ones.** Both bugs that reached
+  a deployed instance were invisible to the unit suite: a socket-proxy grant
+  that silently refused every restart, and a restart HTTP timeout shorter than
+  Docker's own stop timeout.
+
+## License
+
+BSD 2-Clause. See [LICENSE](LICENSE).
 | `docker socket proxy unreachable` at startup | `DOCKER_HOST` wrong, or the watchdog is not on the proxy's `internal` network |
 | Restart history reset | `/data` is not a persistent volume — cooldowns will not survive recreation |
 | HA entities never appear | `HA_DISCOVERY_PREFIX` doesn't match HA's discovery prefix, or HA's MQTT integration isn't configured |
