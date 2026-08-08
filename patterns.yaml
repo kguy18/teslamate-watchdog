@@ -1,0 +1,64 @@
+# Log classification patterns for the TeslaMate container log.
+#
+# Consumed by the stage-2 log classifier. Each entry is a list of
+# case-insensitive regular expressions; a log line matching any pattern in a
+# category counts as one hit for that category.
+#
+# SECURITY: matched lines are truncated before they are stored anywhere, so a
+# line that happens to carry a token fragment cannot leak into diagnostics or
+# MQTT. Never add a capture group that extracts a token value.
+
+categories:
+  # TeslaMate has lost its session entirely — a human must re-enter tokens.
+  # Restart is FORBIDDEN for this category.
+  auth_lost:
+    - 'Error / not_signed_in'
+    - 'Cannot refresh access token: :not_signed_in'
+    - 'fuse_blown'
+
+  # Token refresh is failing repeatedly. Also restart-FORBIDDEN: a restart
+  # cannot revive a dead refresh token.
+  refresh_failure:
+    - 'Token refresh failed'
+    - 'invalid_grant'
+    - 'login_required'
+    - 'token_refresh'
+    - 'unauthorized'
+    - ' 401'
+
+  # PostgreSQL trouble. Restart of TeslaMate is FORBIDDEN while the database is
+  # unhealthy, and the database itself is never restarted by this watchdog.
+  database_failure:
+    - 'Postgrex\.Protocol'
+    - 'DBConnection\.ConnectionError'
+    - 'connection not available'
+    - 'tcp recv \(idle\): closed'
+    - 'could not connect to server'
+
+  # ENCRYPTION_KEY changed: the stored tokens can no longer be decrypted.
+  # Restart-FORBIDDEN; needs the original key restored or fresh tokens entered.
+  token_decryption:
+    - 'Could not decrypt API tokens'
+
+  # Informational only. Deliberately never used to decide state: a successful
+  # refresh in the log must not mask a sign-in page being served right now.
+  refresh_success:
+    - 'Refreshed api tokens'
+    - 'Scheduling token refresh'
+    - 'oauth2/v3/token -> 200'
+
+  # Transient connectivity. These are the blips a restart can legitimately fix.
+  network_failure:
+    - 'Finch\.TransportError'
+    - 'Mint\.TransportError'
+    - 'timeout'
+    - 'connection closed'
+
+# How many matching lines within the lookback window are needed before a
+# category is treated as a confirmed signal rather than noise.
+thresholds:
+  auth_lost: 1
+  refresh_failure: 3
+  database_failure: 3
+  token_decryption: 1
+  network_failure: 5

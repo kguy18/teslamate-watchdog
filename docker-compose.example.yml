@@ -1,0 +1,140 @@
+# TeslaMate Watchdog — services to add to your EXISTING TeslaMate compose file.
+#
+# Adding them to the same compose file (rather than running a second one) means
+# both services land on TeslaMate's default network automatically, so
+# `http://teslamate:4000/` resolves with no extra network wiring.
+#
+# If you would rather keep this in a separate compose file, add an
+# `external: true` network pointing at TeslaMate's network — see the README.
+#
+# BEFORE USING, verify against your own compose file (pre-flight step 1):
+#   - the TeslaMate service is really named `teslamate`
+#   - the Postgres service is really named `database`
+#   - `build:` points at wherever you put this repo
+
+services:
+  watchdog:
+    build: ./teslamate-watchdog
+    image: teslamate-watchdog:local
+    container_name: teslamate-watchdog
+    restart: unless-stopped
+    depends_on:
+      - watchdog-socket-proxy
+    environment:
+      TESLAMATE_URL: http://teslamate:4000/
+      TESLAMATE_CONTAINER: teslamate
+      DATABASE_CONTAINER: database
+      DOCKER_HOST: tcp://watchdog-socket-proxy:2375
+
+      # MQTT — point at the Mosquitto broker in your Home Assistant LXC.
+      # Credentials come from .env so they stay out of this file.
+      MQTT_HOST: ${WATCHDOG_MQTT_HOST}
+      MQTT_PORT: 1883
+      MQTT_USERNAME: ${WATCHDOG_MQTT_USERNAME}
+      MQTT_PASSWORD: ${WATCHDOG_MQTT_PASSWORD}
+      MQTT_BASE_TOPIC: teslamate/watchdog
+      TESLAMATE_HEALTH_TOPIC: teslamate/cars/1/healthy
+
+      CHECK_INTERVAL_SECONDS: 60
+      FAILURE_CONFIRMATION_COUNT: 3
+      RECOVERY_CONFIRMATION_COUNT: 2
+
+      # On: TeslaMate republishes `healthy` on every vehicle summary (verified
+      # in the v4.0.1 source), so a gap in the heartbeat is real evidence the
+      # vehicle logger has stopped — even while parked.
+      STALENESS_DETECTION_ENABLED: "true"
+      # While driving/charging TeslaMate publishes every few seconds.
+      MQTT_STALE_SECONDS: 600
+      # Every other state. Must exceed TeslaMate's `suspend_min` setting: while
+      # suspended it stops polling so the car can sleep and publishes nothing
+      # for that whole window (21 min default, 30 with the streaming API).
+      MQTT_PARKED_STALE_SECONDS: 5400
+
+      # Log window used to DECIDE state, kept deliberately short — it is also
+      # how long a resolved auth incident stays latched. Diagnostics still keep
+      # the full DIAGNOSTIC_LOG_LOOKBACK (2h) of context.
+      LOG_ANALYSIS_LOOKBACK: 15m
+
+      # No effect until stage 2 adds the restart code.
+      AUTO_RESTART_ENABLED: "true"
+      RESTART_COOLDOWN_SECONDS: 21600
+      MAX_RESTARTS_PER_24_HOURS: 2
+
+      HA_DISCOVERY_ENABLED: "true"
+      LOG_LEVEL: INFO
+    volumes:
+      - watchdog-data:/data
+    networks:
+      # TeslaMate's network (for http://teslamate:4000/) and MQTT egress.
+      - default
+      # The proxy, which nothing else can reach.
+      - watchdog-socket
+
+  # Mediates Docker API access. The watchdog never sees /var/run/docker.sock.
+  #
+  # POST=1 is REQUIRED for restart and was verified against proxy 0.3.0: with
+  # POST unset, POST /containers/<id>/restart returns 403 and the watchdog can
+  # never recover anything. ALLOW_RESTARTS alone does NOT substitute for it —
+  # measured identical results with and without it once POST=1 is set.
+  #
+  # POST=1 is broader than we would like: it permits restart/stop/kill/delete
+  # on any container this proxy can see. Two things contain that:
+  #   1. `internal: true` network below — only the watchdog can reach the proxy.
+  #   2. EXEC=0 — verified to block POST /exec/<id>/start with 403, so no code
+  #      execution, even though exec *creation* is permitted by CONTAINERS=1.
+  # See the README security section for the full verified grant matrix, and for
+  # a stricter alternative proxy if you want endpoint-level allowlisting.
+  watchdog-socket-proxy:
+    image: tecnativa/docker-socket-proxy:0.3.0
+    container_name: teslamate-watchdog-socket-proxy
+    restart: unless-stopped
+    environment:
+      # --- granted -------------------------------------------------------
+      # GET /containers/... — list, inspect, logs.
+      CONTAINERS: 1
+      # Required for POST /containers/<id>/restart. See the note above.
+      POST: 1
+      # No measurable effect on top of POST=1 in 0.3.0, kept so the intent is
+      # explicit and so this stays narrow if the proxy tightens its semantics.
+      ALLOW_RESTARTS: 1
+
+      # --- denied (listed explicitly so the grant stays auditable) --------
+      # EXEC=0 is load-bearing: it is what stops POST=1 from becoming code
+      # execution inside the database container.
+      EXEC: 0
+      AUTH: 0
+      BUILD: 0
+      COMMIT: 0
+      CONFIGS: 0
+      DISTRIBUTION: 0
+      IMAGES: 0
+      INFO: 0
+      NETWORKS: 0
+      NODES: 0
+      PLUGINS: 0
+      SECRETS: 0
+      SERVICES: 0
+      SESSION: 0
+      SWARM: 0
+      SYSTEM: 0
+      TASKS: 0
+      VOLUMES: 0
+      ALLOW_START: 0
+      ALLOW_STOP: 0
+    volumes:
+      # `:ro` protects the socket file, not the API behind it — the proxy's
+      # allowlist above and the internal network are what constrain access.
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - watchdog-socket
+    # DELIBERATELY no `ports:`. Publishing this on the host would hand
+    # container control to anything that can reach that port.
+
+networks:
+  # No external connectivity, and only the watchdog is attached — so a
+  # compromise of TeslaMate, Grafana or the database cannot reach the proxy.
+  watchdog-socket:
+    internal: true
+
+volumes:
+  watchdog-data:
