@@ -1,5 +1,3 @@
-| `RECOVERY_CONFIRMATION_COUNT` | `2` | |
-| `LOGGER_UNHEALTHY_CONFIRMATION_COUNT` | `15` | Longer on purpose — TeslaMate's fuse self-clears in minutes |
 # TeslaMate Watchdog
 
 A small monitoring and auto-recovery service for a self-hosted
@@ -345,6 +343,7 @@ All configuration is environment variables. Defaults shown.
 | `STALENESS_DETECTION_ENABLED` | `true` | Gated to driving/charging; see below |
 | `FAILURE_CONFIRMATION_COUNT` | `3` | |
 | `RECOVERY_CONFIRMATION_COUNT` | `2` | |
+| `LOGGER_UNHEALTHY_CONFIRMATION_COUNT` | `15` | Longer on purpose — TeslaMate's fuse self-clears in minutes |
 | `AUTO_RESTART_ENABLED` | `true` | Set `false` to monitor without ever restarting |
 | `RESTART_COOLDOWN_SECONDS` | `21600` | 6 hours |
 | `POST_RESTART_WAIT_SECONDS` | `90` | |
