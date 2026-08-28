@@ -29,7 +29,6 @@ def test_the_shipped_patterns_file_loads(classifier):
     [
         ("13:02:11.204 [error] Error / not_signed_in", "auth_lost"),
         ("Cannot refresh access token: :not_signed_in", "auth_lost"),
-        ("fuse_blown for :vehicle_1", "auth_lost"),
         ("Token refresh failed", "refresh_failure"),
         ("{'error': 'invalid_grant'}", "refresh_failure"),
         ("login_required", "refresh_failure"),
@@ -142,3 +141,27 @@ def test_an_invalid_regex_is_skipped_not_fatal(tmp_path):
 def test_empty_log_text_is_handled(classifier):
     assert classifier.classify("").counts == {}
     assert classifier.classify("\n\n  \n").counts == {}
+
+
+def test_a_blown_fuse_reports_an_unhealthy_logger_not_an_auth_failure(classifier):
+    """The daily false alarm: a blown fuse is repeated API errors, not a logout.
+
+    TeslaMate's `healthy?/1` IS the fuse state, so the same event already
+    reaches us as healthy=false over MQTT. Classifying `fuse_blown` as auth
+    outranked logger health, told the user to re-enter working tokens, and —
+    because auth states are restart-forbidden — could never self-heal.
+    """
+    from src.http_check import HttpCategory, HttpResult
+    from src.state_machine import Observation, State, evaluate
+
+    signals = classifier.signals(classifier.classify("fuse_blown for :vehicle_1"))
+    assert signals.auth_lost is False
+    assert signals.auth_refresh_failing is False
+
+    observation = Observation(
+        http=HttpResult(category=HttpCategory.AUTHENTICATED, status_code=200),
+        logger_healthy=False,
+        database_healthy=True,
+        log_signals=signals,
+    )
+    assert evaluate(observation).state is State.LOGGER_UNHEALTHY

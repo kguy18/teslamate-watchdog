@@ -14,7 +14,12 @@ categories:
   auth_lost:
     - 'Error / not_signed_in'
     - 'Cannot refresh access token: :not_signed_in'
-    - 'fuse_blown'
+    # NOT fuse_blown: TeslaMate's healthy?/1 IS the fuse state (:api_error and
+    # :vehicle_not_found), so a blown fuse means repeated API errors, not a lost
+    # session. It reaches us better as healthy=false over MQTT, which routes to
+    # LOGGER_UNHEALTHY — restartable and self-healing. Classifying it as auth
+    # sent 're-enter your tokens' for routine API blips, and auth states are
+    # restart-forbidden so it could never clear itself.
 
   # Token refresh is failing repeatedly. Also restart-FORBIDDEN: a restart
   # cannot revive a dead refresh token.
