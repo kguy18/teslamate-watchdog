@@ -239,3 +239,37 @@ def test_recovering_state_ignores_ordinary_checks(make_config):
 
     assert machine.step(observe(logger_healthy=True)) is None
     assert machine.state is State.RECOVERING
+
+
+def test_a_transient_fuse_trip_does_not_reach_logger_unhealthy(make_config):
+    """TeslaMate's api_error fuse trips on Tesla API timeouts and self-clears in
+    ~7 minutes. Confirming at the normal 3-check threshold would restart
+    TeslaMate for a blip it rides out on its own — and a restart cannot fix a
+    Tesla-side timeout."""
+    config = make_config(FAILURE_CONFIRMATION_COUNT=3)
+    machine = StateMachine(config, initial=State.HEALTHY)
+
+    unhealthy = observe(logger_healthy=False)
+    for _ in range(10):  # ~10 minutes of a blown fuse
+        machine.step(unhealthy)
+
+    assert machine.state is State.HEALTHY
+
+
+def test_a_persistently_unhealthy_logger_still_confirms(make_config):
+    config = make_config()
+    machine = StateMachine(config, initial=State.HEALTHY)
+
+    feed(machine, observe(logger_healthy=False), config.logger_unhealthy_confirmation_count)
+
+    assert machine.state is State.LOGGER_UNHEALTHY
+
+
+def test_other_failures_keep_the_short_threshold(make_config):
+    """Only LOGGER_UNHEALTHY waits; a dead TeslaMate must still confirm fast."""
+    config = make_config(FAILURE_CONFIRMATION_COUNT=3)
+    machine = StateMachine(config, initial=State.HEALTHY)
+
+    feed(machine, observe(http=UNREACHABLE), 3)
+
+    assert machine.state is State.TESLAMATE_UNREACHABLE

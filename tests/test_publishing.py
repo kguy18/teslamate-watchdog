@@ -136,7 +136,10 @@ def test_logged_out_emits_authentication_required_and_refuses_restart(make_confi
 
 def test_logger_unhealthy_does_not_ask_for_authentication(make_config):
     watchdog, mqtt, machine = build(
-        make_config, AUTHENTICATED, logger_healthy=False, FAILURE_CONFIRMATION_COUNT=2
+        make_config,
+        AUTHENTICATED,
+        logger_healthy=False,
+        LOGGER_UNHEALTHY_CONFIRMATION_COUNT=2,
     )
     watchdog.check_once()
     watchdog.check_once()

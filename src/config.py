@@ -150,6 +150,12 @@ class Config:
     # --- confirmation counters -------------------------------------------
     failure_confirmation_count: int
     recovery_confirmation_count: int
+    #: LOGGER_UNHEALTHY needs far more confirmation than other failures.
+    #: TeslaMate's `healthy` flag is its API-error fuse — a circuit breaker that
+    #: trips on transient Tesla API timeouts and self-clears in minutes. Acting
+    #: at the normal threshold restarts TeslaMate for blips it would have ridden
+    #: out on its own, and a restart cannot fix a Tesla-side timeout anyway.
+    logger_unhealthy_confirmation_count: int
 
     # --- restart policy ---------------------------------------------------
     auto_restart_enabled: bool
@@ -252,6 +258,11 @@ class Config:
             staleness_detection_enabled=staleness_enabled,
             failure_confirmation_count=_env_int("FAILURE_CONFIRMATION_COUNT", 3, minimum=1),
             recovery_confirmation_count=_env_int("RECOVERY_CONFIRMATION_COUNT", 2, minimum=1),
+            # Observed fuse recovery is ~7 min; 15 checks gives 2x margin while
+            # still catching a genuinely wedged logger within 15 minutes.
+            logger_unhealthy_confirmation_count=_env_int(
+                "LOGGER_UNHEALTHY_CONFIRMATION_COUNT", 15, minimum=1
+            ),
             auto_restart_enabled=_env_bool("AUTO_RESTART_ENABLED", True),
             restart_cooldown_seconds=_env_int("RESTART_COOLDOWN_SECONDS", 21600, minimum=0),
             post_restart_wait_seconds=_env_int("POST_RESTART_WAIT_SECONDS", 90, minimum=0),

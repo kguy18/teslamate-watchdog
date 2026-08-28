@@ -1,3 +1,5 @@
+| `RECOVERY_CONFIRMATION_COUNT` | `2` | |
+| `LOGGER_UNHEALTHY_CONFIRMATION_COUNT` | `15` | Longer on purpose — TeslaMate's fuse self-clears in minutes |
 # TeslaMate Watchdog
 
 A small monitoring and auto-recovery service for a self-hosted

@@ -307,10 +307,12 @@ class StateMachine:
             self._candidate = evaluation.state
             self._candidate_streak = 1
 
-        confirmed = (
-            evaluation.immediate
-            or self._candidate_streak >= self._config.failure_confirmation_count
+        required = (
+            self._config.logger_unhealthy_confirmation_count
+            if evaluation.state is State.LOGGER_UNHEALTHY
+            else self._config.failure_confirmation_count
         )
+        confirmed = evaluation.immediate or self._candidate_streak >= required
         if not confirmed or self.state is evaluation.state:
             return None
 
