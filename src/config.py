@@ -370,6 +370,7 @@ class Config:
             "check_interval_seconds": self.check_interval_seconds,
             "failure_confirmation_count": self.failure_confirmation_count,
             "recovery_confirmation_count": self.recovery_confirmation_count,
+            "logger_unhealthy_confirmation_count": self.logger_unhealthy_confirmation_count,
             "staleness_detection_enabled": self.staleness_detection_enabled,
             "mqtt_stale_seconds": self.mqtt_stale_seconds,
             "mqtt_parked_stale_seconds": self.mqtt_parked_stale_seconds,
