@@ -181,16 +181,30 @@ check.
 
 ## Restart policy
 
-Restarts are permitted **only** for `LOGGER_UNHEALTHY` and
-`TESLAMATE_UNREACHABLE`, and are forbidden for `LOGGED_OUT`,
-`AUTH_REFRESH_FAILED`, `DATABASE_UNHEALTHY`, and token-decryption failures.
+Restarts are permitted for `LOGGER_UNHEALTHY`, `TESLAMATE_UNREACHABLE`, and —
+conditionally — `LOGGED_OUT`. They are forbidden for `AUTH_REFRESH_FAILED` and
+`DATABASE_UNHEALTHY`.
 
-This is not tunable, and it is not an oversight. When TeslaMate is logged out
-its stored refresh token is dead. Restarting brings the container back up still
-logged out — it burns the restart budget, delays the notification by
-`POST_RESTART_WAIT_SECONDS`, and fixes nothing. Logout goes straight to MQTT so
-a human can paste in fresh tokens. Restarts only help hung processes and
-transient network faults.
+**`LOGGED_OUT` is the conditional one.** A logout is often not a dead token at
+all: if TeslaMate cannot reach `auth.tesla.com` when its access token expires
+(a DNS or network outage), it gives up with `Error / not_signed_in` and serves
+the sign-in page while a perfectly valid refresh token sits in the database.
+Re-typing tokens fails during the outage — TeslaMate still cannot reach Tesla to
+validate them — and a restart afterwards fixes it with no tokens re-entered.
+
+So the guard probes `TESLA_AUTH_HOST` (TCP, port 443) and permits the restart
+only when it is reachable. Restarting into the outage that caused the logout
+cannot re-authenticate and would burn the budget for nothing. Set
+`LOGGED_OUT_RESTART_ENABLED=false` to go back to never restarting on logout.
+
+**`AUTH_REFRESH_FAILED` stays forbidden** because it also covers
+token-decryption failures from a changed `ENCRYPTION_KEY`, which no restart can
+fix.
+
+If a restart does not clear the logout, the tokens really are dead: recovery
+escalates to `MANUAL_INTERVENTION_REQUIRED` and the human is told to paste in
+fresh ones. The "generate fresh tokens" alert is only sent when no restart was
+attempted, so nobody is asked to re-enter tokens that are actually fine.
 
 The allowlist lives in [`src/state_machine.py`](src/state_machine.py) as an
 allowlist specifically so that a state added later is non-restartable until
