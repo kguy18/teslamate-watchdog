@@ -72,7 +72,7 @@ services:
       # the full DIAGNOSTIC_LOG_LOOKBACK (2h) of context.
       LOG_ANALYSIS_LOOKBACK: 15m
 
-      # No effect until stage 2 adds the restart code.
+      # Set false to monitor without ever restarting anything.
       AUTO_RESTART_ENABLED: "true"
       RESTART_COOLDOWN_SECONDS: 21600
       MAX_RESTARTS_PER_24_HOURS: 2
