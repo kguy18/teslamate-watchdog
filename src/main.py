@@ -19,7 +19,7 @@ from typing import Any
 from . import __version__, ha_discovery, logging_setup
 from .config import Config, ConfigError
 from .diagnostics import DiagnosticsWriter
-from .docker_client import UNKNOWN_STATUS, DockerClient, check_database
+from .docker_client import UNKNOWN_STATUS, DockerClient, check_database, tcp_probe
 from .http_check import HttpCategory, HttpChecker
 from .log_classifier import LogClassifier
 from .mqtt_client import WatchdogMqtt
@@ -28,6 +28,7 @@ from .restart_manager import RestartManager
 from .state_machine import (
     AUTH_STATES,
     FAILURE_STATES,
+    RESTART_NEEDS_TESLA_AUTH,
     Observation,
     State,
     StateMachine,
@@ -42,9 +43,12 @@ log = logging.getLogger(__name__)
 PAYLOAD_UNSET = "None"
 
 AUTH_ACTION_MESSAGE = (
-    "TeslaMate is signed out. Generate fresh Tesla API tokens with a token app "
-    "and paste them into the TeslaMate UI. The watchdog will not restart "
-    "TeslaMate for this — a restart cannot revive a dead refresh token."
+    "TeslaMate is signed out and is not recording drives. The watchdog did not "
+    "restart it — either Tesla's auth host is unreachable (in which case a "
+    "restart cannot re-authenticate and this should clear when the network "
+    "recovers), or a restart was already tried and did not help. If it does not "
+    "clear, generate fresh Tesla API tokens with a token app and paste them "
+    "into the TeslaMate UI."
 )
 
 
@@ -217,7 +221,12 @@ class Watchdog:
         }
         self._mqtt.publish_event("failure_detected", base)
 
-        if current in AUTH_STATES:
+        # Decided first: if a restart is being attempted, telling the user to
+        # re-enter tokens is premature and usually wrong. If the restart fails,
+        # recovery escalates to manual_intervention_required instead.
+        restarting = self._consider_recovery(current, transition.reason, observation)
+
+        if current in AUTH_STATES and not restarting:
             self._mqtt.publish_event(
                 "authentication_required",
                 {
@@ -239,13 +248,12 @@ class Watchdog:
                 },
             )
 
-        self._consider_recovery(current, transition.reason, observation)
-
     def _consider_recovery(
         self, state: State, reason: str, observation: Observation
-    ) -> None:
+    ) -> bool:
+        """Capture diagnostics and start a restart if every guard passes."""
         if self._recovery is None or self._restarts is None:
-            return
+            return False
 
         # Diagnostics are captured for auth states too — those are exactly the
         # incidents a human has to act on — but they never lead to a restart.
@@ -255,10 +263,23 @@ class Watchdog:
                 "restart not permitted for this state",
                 extra={"context": {"state": state.value}},
             )
-            return
+            return False
+
+        # Only probed when it matters — a logout may be TeslaMate failing to
+        # reach Tesla, in which case restarting into the same outage is futile.
+        reachable: bool | None = None
+        if state in RESTART_NEEDS_TESLA_AUTH:
+            reachable, detail = tcp_probe(
+                self._config.tesla_auth_host,
+                self._config.tesla_auth_port,
+                self._config.http_timeout_seconds,
+            )
+            log.info("probed tesla auth host", extra={"context": {"detail": detail}})
 
         decision = self._restarts.evaluate(
-            state, database_healthy_streak=self._database_healthy_streak
+            state,
+            database_healthy_streak=self._database_healthy_streak,
+            tesla_auth_reachable=reachable,
         )
         self._recovery.capture(state, reason, observation, self._last_docker_state)
 
@@ -267,9 +288,9 @@ class Watchdog:
                 "restart withheld",
                 extra={"context": {"state": state.value, "reason": decision.reason}},
             )
-            return
+            return False
 
-        self._recovery.begin(state, reason)
+        return self._recovery.begin(state, reason)
 
     # --- publishing -------------------------------------------------------
 

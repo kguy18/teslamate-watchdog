@@ -337,13 +337,13 @@ def check_database(config: Config, docker: DockerClient) -> DatabaseHealth:
             False, "healthcheck", f"docker healthcheck {status.health}", status
         )
 
-    reachable, detail = _tcp_probe(
+    reachable, detail = tcp_probe(
         config.database_host, config.database_port, config.docker_timeout_seconds
     )
     return DatabaseHealth(reachable, "tcp", detail, status)
 
 
-def _tcp_probe(host: str, port: int, timeout: int) -> tuple[bool, str]:
+def tcp_probe(host: str, port: int, timeout: int) -> tuple[bool, str]:
     try:
         with socket.create_connection((host, port), timeout=timeout):
             return True, f"tcp connect to {host}:{port} succeeded"

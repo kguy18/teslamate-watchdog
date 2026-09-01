@@ -2,10 +2,15 @@
 
 Two rules in here are load-bearing and must not be "simplified" away:
 
-1. **A logged-out TeslaMate is never restarted.** Its stored refresh token is
-   dead; restarting brings the container back up still logged out. It burns the
-   restart budget, delays the notification by POST_RESTART_WAIT_SECONDS, and
-   fixes nothing. Logout goes straight to MQTT so a human re-enters tokens.
+1. **A logout is never restarted into an outage.** The original rule was
+   "never restart a logout at all", on the assumption that the stored refresh
+   token must be dead. Observed reality: a DNS failure stopped TeslaMate
+   reaching auth.tesla.com, its access token expired, and it dropped to the
+   sign-in page with a perfectly valid refresh token still in the database. A
+   restart recovers that completely — but only once the network is back, so the
+   restart guard probes TESLA_AUTH_HOST first and refuses while it is
+   unreachable. If a restart does not clear it, the tokens really are dead and
+   it escalates to a human.
 2. **A single bad check never changes state.** Failures need
    FAILURE_CONFIRMATION_COUNT consecutive agreeing checks (except a stopped
    container, which is unambiguous), and recovery needs
@@ -41,13 +46,20 @@ class State(str, Enum):
 #: deliberately: a state added later is non-restartable until someone puts it
 #: here on purpose.
 RESTART_ALLOWED_STATES: Final[frozenset[State]] = frozenset(
-    {State.LOGGER_UNHEALTHY, State.TESLAMATE_UNREACHABLE}
+    {State.LOGGER_UNHEALTHY, State.TESLAMATE_UNREACHABLE, State.LOGGED_OUT}
 )
+
+#: States whose restart needs Tesla's auth host to be reachable first. A logout
+#: is usually TeslaMate failing to refresh during a network outage; restarting
+#: into that same outage cannot help and only burns the budget.
+RESTART_NEEDS_TESLA_AUTH: Final[frozenset[State]] = frozenset({State.LOGGED_OUT})
 
 #: Spelled out so the intent survives refactoring, and cross-checked against the
 #: allowlist below.
+#: AUTH_REFRESH_FAILED stays forbidden: it also covers token-decryption
+#: failures from a changed ENCRYPTION_KEY, which no restart can fix.
 RESTART_FORBIDDEN_STATES: Final[frozenset[State]] = frozenset(
-    {State.LOGGED_OUT, State.AUTH_REFRESH_FAILED, State.DATABASE_UNHEALTHY}
+    {State.AUTH_REFRESH_FAILED, State.DATABASE_UNHEALTHY}
 )
 
 assert not (RESTART_ALLOWED_STATES & RESTART_FORBIDDEN_STATES), (

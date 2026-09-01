@@ -22,7 +22,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .config import Config
-from .state_machine import State, restart_allowed_for_state
+from .state_machine import RESTART_NEEDS_TESLA_AUTH, State, restart_allowed_for_state
 
 log = logging.getLogger(__name__)
 
@@ -154,6 +154,7 @@ class RestartManager:
         state: State,
         *,
         database_healthy_streak: int,
+        tesla_auth_reachable: bool | None = None,
         now: float | None = None,
     ) -> Decision:
         now = time.time() if now is None else now
@@ -167,6 +168,17 @@ class RestartManager:
                 False,
                 f"{state.value} is not a restartable state — a restart cannot fix it",
             )
+
+        if state in RESTART_NEEDS_TESLA_AUTH:
+            if not config.logged_out_restart_enabled:
+                return Decision(False, "LOGGED_OUT_RESTART_ENABLED is false")
+            if tesla_auth_reachable is not True:
+                # Restarting into the outage that caused the logout cannot help.
+                return Decision(
+                    False,
+                    f"{config.tesla_auth_host} is not reachable — a restart cannot "
+                    f"re-authenticate until the network recovers",
+                )
 
         if database_healthy_streak < DATABASE_CONFIRMATION_COUNT:
             return Decision(

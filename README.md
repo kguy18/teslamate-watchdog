@@ -29,10 +29,12 @@ Two design decisions drive everything else:
 **A single bad check never changes anything.** Failures need three consecutive
 agreeing checks, recovery needs two. Transient blips are ignored by design.
 
-**A logged-out TeslaMate is never restarted.** Its refresh token is dead;
-restarting brings it back up still logged out, burns the restart budget and
-delays telling you. Logout goes straight to MQTT so a human re-enters tokens.
-See [Restart policy](#restart-policy).
+**A logout is never restarted into an outage.** A logout is often TeslaMate
+failing to reach `auth.tesla.com` — DNS or network — after which its access
+token expires and it drops to the sign-in page with a perfectly valid refresh
+token still stored. A restart fixes that completely, but only once the network
+is back, so the guard probes Tesla's auth host first and refuses while it is
+unreachable. See [Restart policy](#restart-policy).
 
 ## Requirements
 
@@ -345,6 +347,8 @@ All configuration is environment variables. Defaults shown.
 | `RECOVERY_CONFIRMATION_COUNT` | `2` | |
 | `LOGGER_UNHEALTHY_CONFIRMATION_COUNT` | `15` | Longer on purpose — TeslaMate's fuse self-clears in minutes |
 | `AUTO_RESTART_ENABLED` | `true` | Set `false` to monitor without ever restarting |
+| `LOGGED_OUT_RESTART_ENABLED` | `true` | Restart on logout, but only when Tesla auth is reachable |
+| `TESLA_AUTH_HOST` / `TESLA_AUTH_PORT` | `auth.tesla.com` / `443` | Probed before a logout restart |
 | `RESTART_COOLDOWN_SECONDS` | `21600` | 6 hours |
 | `POST_RESTART_WAIT_SECONDS` | `90` | |
 | `MAX_RESTARTS_PER_24_HOURS` | `2` | |

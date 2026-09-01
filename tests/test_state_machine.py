@@ -13,6 +13,7 @@ from src.http_check import HttpCategory, HttpResult
 from src.state_machine import (
     RESTART_ALLOWED_STATES,
     RESTART_FORBIDDEN_STATES,
+    RESTART_NEEDS_TESLA_AUTH,
     LogSignals,
     Observation,
     State,
@@ -54,8 +55,16 @@ def test_restart_is_allowed_only_for_hung_states(state):
     assert restart_allowed_for_state(state) is True
 
 
-def test_restart_allowlist_is_exactly_the_two_hung_states():
-    assert RESTART_ALLOWED_STATES == {State.LOGGER_UNHEALTHY, State.TESLAMATE_UNREACHABLE}
+def test_restart_allowlist_is_exactly_the_recoverable_states():
+    assert RESTART_ALLOWED_STATES == {
+        State.LOGGER_UNHEALTHY,
+        State.TESLAMATE_UNREACHABLE,
+        State.LOGGED_OUT,
+    }
+
+
+def test_only_a_logout_needs_the_tesla_auth_probe():
+    assert RESTART_NEEDS_TESLA_AUTH == {State.LOGGED_OUT}
 
 
 def test_no_other_state_is_restartable():
@@ -222,14 +231,15 @@ def test_inconclusive_checks_do_not_count_toward_recovery(make_config):
     assert machine.state is State.TESLAMATE_UNREACHABLE
 
 
-def test_logged_out_confirms_and_stays_non_restartable(make_config):
+def test_logged_out_confirms_and_is_restartable_at_the_state_level(make_config):
+    """Restartable here, but the guard still requires Tesla auth to be reachable."""
     config = make_config(FAILURE_CONFIRMATION_COUNT=3)
     machine = StateMachine(config, initial=State.HEALTHY)
 
     feed(machine, observe(http=SIGNIN), 3)
 
     assert machine.state is State.LOGGED_OUT
-    assert restart_allowed_for_state(machine.state) is False
+    assert restart_allowed_for_state(machine.state) is True
 
 
 def test_recovering_state_ignores_ordinary_checks(make_config):

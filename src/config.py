@@ -122,6 +122,11 @@ class Config:
     database_host: str
     database_port: int
     teslamate_signin_pattern: str
+    #: Probed before restarting for a logout. A logout caused by DNS or a
+    #: network outage cannot be fixed by restarting into the same outage.
+    tesla_auth_host: str
+    tesla_auth_port: int
+    logged_out_restart_enabled: bool
     signin_body_markers: tuple[str, ...]
 
     # --- MQTT -------------------------------------------------------------
@@ -232,6 +237,9 @@ class Config:
             database_host=_env("DATABASE_HOST", database_container),
             database_port=_env_int("DATABASE_PORT", 5432, minimum=1),
             teslamate_signin_pattern=_env("TESLAMATE_SIGNIN_PATTERN", r"/sign[_-]?in"),
+            tesla_auth_host=_env("TESLA_AUTH_HOST", "auth.tesla.com"),
+            tesla_auth_port=_env_int("TESLA_AUTH_PORT", 443, minimum=1),
+            logged_out_restart_enabled=_env_bool("LOGGED_OUT_RESTART_ENABLED", True),
             signin_body_markers=_env_csv(
                 "TESLAMATE_SIGNIN_BODY_MARKERS", DEFAULT_SIGNIN_BODY_MARKERS
             ),
@@ -377,6 +385,7 @@ class Config:
             "log_analysis_lookback": self.log_analysis_lookback,
             "diagnostic_log_lookback": self.diagnostic_log_lookback,
             "auto_restart_enabled": self.auto_restart_enabled,
+            "logged_out_restart_enabled": self.logged_out_restart_enabled,
             "restart_cooldown_seconds": self.restart_cooldown_seconds,
             "max_restarts_per_24_hours": self.max_restarts_per_24_hours,
             "ha_discovery_enabled": self.ha_discovery_enabled,

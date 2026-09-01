@@ -40,7 +40,7 @@ def allow(manager, state=State.TESLAMATE_UNREACHABLE, streak=HEALTHY_DB, now=NOW
 
 @pytest.mark.parametrize(
     "state",
-    [State.LOGGED_OUT, State.AUTH_REFRESH_FAILED, State.DATABASE_UNHEALTHY],
+    [State.AUTH_REFRESH_FAILED, State.DATABASE_UNHEALTHY],
 )
 def test_non_restartable_states_are_refused(manager, state):
     decision = allow(manager(), state=state)
@@ -55,13 +55,64 @@ def test_restartable_states_are_permitted_when_guards_pass(manager, state):
     assert allow(manager(), state=state).allowed is True
 
 
-def test_logged_out_is_refused_even_with_everything_else_perfect(manager):
-    """The headline requirement: a restart cannot revive a dead refresh token."""
-    instance = manager()
-    decision = instance.evaluate(
+# --- a logout is restartable ONLY when Tesla auth is reachable -------------
+
+
+def test_logged_out_is_refused_while_tesla_auth_is_unreachable(manager):
+    """The observed failure: DNS died, TeslaMate could not refresh, and dropped to
+    the sign-in page with a valid token still stored. Restarting into that same
+    outage cannot re-authenticate."""
+    decision = manager().evaluate(
+        State.LOGGED_OUT,
+        database_healthy_streak=99,
+        tesla_auth_reachable=False,
+        now=NOW,
+    )
+    assert decision.allowed is False
+    assert "not reachable" in decision.reason
+
+
+def test_logged_out_is_refused_when_reachability_is_unknown(manager):
+    decision = manager().evaluate(
         State.LOGGED_OUT, database_healthy_streak=99, now=NOW
     )
     assert decision.allowed is False
+
+
+def test_logged_out_is_permitted_once_tesla_auth_is_reachable(manager):
+    decision = manager().evaluate(
+        State.LOGGED_OUT,
+        database_healthy_streak=HEALTHY_DB,
+        tesla_auth_reachable=True,
+        now=NOW,
+    )
+    assert decision.allowed is True
+
+
+def test_the_logout_restart_can_be_turned_off(manager):
+    decision = manager(LOGGED_OUT_RESTART_ENABLED="false").evaluate(
+        State.LOGGED_OUT,
+        database_healthy_streak=HEALTHY_DB,
+        tesla_auth_reachable=True,
+        now=NOW,
+    )
+    assert decision.allowed is False
+    assert "LOGGED_OUT_RESTART_ENABLED" in decision.reason
+
+
+def test_reachable_tesla_auth_does_not_excuse_the_other_guards(manager):
+    """The probe is an extra condition, never a bypass."""
+    instance = manager(RESTART_COOLDOWN_SECONDS=21600)
+    instance.record(State.LOGGED_OUT, "first", now=NOW)
+
+    decision = instance.evaluate(
+        State.LOGGED_OUT,
+        database_healthy_streak=HEALTHY_DB,
+        tesla_auth_reachable=True,
+        now=NOW + 60,
+    )
+    assert decision.allowed is False
+    assert "cooldown" in decision.reason
 
 
 # --- the other guards -------------------------------------------------------
