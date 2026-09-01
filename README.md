@@ -561,7 +561,7 @@ against the real thing.
 
 | What you see | What it means | What to do |
 | --- | --- | --- |
-| `LOGGED_OUT`, `authenticated=false` | Tokens are dead. TeslaMate is serving the sign-in page and recording nothing. | Generate fresh tokens in a token app, paste them into the TeslaMate UI. No restart will help. |
+| `LOGGED_OUT`, `authenticated=false` | Tokens are dead, **or** TeslaMate could not reach Tesla when the access token expired. Check the bundle's `teslamate.log` for `nxdomain` / `TransportError` before assuming the former. | If the log is clean, generate fresh tokens. If it shows DNS or transport errors, see [A logout that is really a DNS outage](#a-logout-that-is-really-a-dns-outage). |
 | `AUTH_REFRESH_FAILED` with `token_decryption` in the bundle | `ENCRYPTION_KEY` changed, so the stored tokens can no longer be read. | Restore the original `ENCRYPTION_KEY`, or re-enter tokens. |
 | `DATABASE_UNHEALTHY` | Postgres is down or failing its healthcheck. | Fix the database. The watchdog never restarts it, and it blocks TeslaMate restarts while this holds. |
 | `TESLAMATE_UNREACHABLE`, container running | Hung process or a 5xx loop. | This is the case auto-restart exists for; it should self-heal. |
@@ -570,6 +570,33 @@ against the real thing.
 | `MANUAL_INTERVENTION_REQUIRED` | A restart happened and did not fix it. | Read the newest bundle under `DIAGNOSTIC_DIR`. |
 | `restart withheld … cooldown active` in the log | Working as designed — a restart happened within the last 6 hours. | Wait, or lower `RESTART_COOLDOWN_SECONDS` if you truly want it more aggressive. |
 | Two TeslaMate instances polling one account | Tesla invalidates tokens when a second client refreshes them. Shows up as repeated `LOGGED_OUT` that returns after re-entering tokens. | Shut down the duplicate — the watchdog cannot detect this for you. |
+
+### A logout that is really a DNS outage
+
+The most confusing failure this tool has hit, worth recognising:
+
+```
+POST https://auth.tesla.com/oauth2/v3/token -> %Finch.TransportError{reason: :nxdomain}
+GET  https://owner-api.teslamotors.com/api/1/vehicles/... -> 401
+car_id=1 [error] Error / not_signed_in
+```
+
+DNS broke, so TeslaMate could not refresh when its access token expired. It gave
+up, marked itself signed out, and served the sign-in page — **with a valid
+refresh token still in the database**.
+
+The tell is that re-typing tokens fails ("invalid tokens") while the outage
+lasts, because TeslaMate still cannot reach Tesla to validate them. Restarting
+afterwards fixes it with no tokens re-entered at all.
+
+Two mitigations, both worth having:
+
+- **Give the TeslaMate container a second resolver** so one resolver failing
+  cannot take DNS down. See the commented `dns:` block in
+  [`docker-compose.example.yml`](docker-compose.example.yml). This prevents the
+  failure rather than recovering from it.
+- **The watchdog restarts on `LOGGED_OUT`** once `TESLA_AUTH_HOST` is reachable
+  again, which recovers this automatically. See [Restart policy](#restart-policy).
 
 ### Operational symptoms
 

@@ -13,6 +13,23 @@
 #   - `build:` points at wherever you put this repo
 
 services:
+
+  # OPTIONAL, but it prevents a nasty failure mode. If your TeslaMate host has
+  # only ONE resolver, a brief DNS outage makes TeslaMate unable to reach
+  # auth.tesla.com when its access token expires. It gives up with
+  # `Error / not_signed_in` and serves the sign-in page — while a perfectly
+  # valid refresh token is still in the database. Re-typing tokens fails
+  # (TeslaMate still cannot reach Tesla to validate them); only time fixes it.
+  #
+  # Seen in practice with Tailscale MagicDNS as the sole resolver: tailscaled
+  # lost its upstream resolvers, returned SERVFAIL for ~5 hours, and TeslaMate
+  # logged out. A second resolver is tried on SERVFAIL, so this would have
+  # prevented it. Uncomment and set the first entry to your usual resolver.
+  #
+  # teslamate:
+  #   dns:
+  #     - 100.100.100.100   # your normal resolver (e.g. Tailscale MagicDNS, Pi-hole)
+  #     - 1.1.1.1           # fallback, used when the first SERVFAILs or times out
   watchdog:
     build: ./teslamate-watchdog
     image: teslamate-watchdog:local
